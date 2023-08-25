@@ -1,0 +1,194 @@
+name: terraform deploy
+on:
+ workflow_dispatch:
+    inputs:
+      Terraform_Workspace_Name:
+        description: Select the Environment. Default - (Dso-sandbox)
+        required: true
+        default: dso-sandbox
+        type: choice
+        options:
+        - dso-sandbox
+        - dso-test
+        - devsecops-test
+        - learning
+        - devsecops
+        - cloudops
+        - kip-prod
+        - kip-uat
+        - conn-tech-sbox
+        - tax-client
+        - informatica
+        - icas
+        - culture-snap
+        - pxcube
+        - modelling
+        - fmmicros
+        - chrisastley
+        - ukfmtis
+        - tax-technology
+        - enterprise-bey
+        - digital-uk
+        - ctc-portal
+        - helios
+        - btmobile
+        - pccportal
+        - tax-coe-b2c
+        - fizznunwood
+        - culture-snap-dev
+        - kclientazure
+      
+      task:
+        description: Select the task to perform. Default - (View TF Plan)
+        required: false
+        default: View Terraform Plan
+        type: choice
+        options:
+        - View Terraform Plan
+        - Perform Terraform Apply
+
+      apply:
+        description: Confirmation for Terraform Apply. Default - (False)
+        required: false
+        default: false
+        type: choice
+        options:
+        - true
+        - false
+       
+    env:
+      TERRAFORM_WORKSPACE_NAME: {inputs.Terraform_Workspace_Name}
+      TASK: {inputs.task}
+      APPLY : {inputs.apply}
+
+      
+        
+jobs:
+  deploy:
+    name: deploy
+    runs-on: pcoe-runner-linux-prod
+    environment: deploy
+
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Dockerfile Reference
+        uses: KPMG-UK/devsecops-hawkeye-script-docker-dependencies@v2
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configuring Vault credentials
+        id: vault-login
+        uses: KPMG-UK/vault-approle-login-action@v0.1.0
+        with:
+            vault_addr: https://vault.customappsteam.co.uk
+            role_id: ${{ secrets.VAULT_ROLE_ID }}
+            secret_id: ${{ secrets.VAULT_SECRET_ID }}
+      
+      - name: Runtime Parameters Display
+        run: |
+          echo "Below is the summary of inputs provided :"
+          echo "Environment Selected : ${{ inputs.TERRAFORM_WORKSPACE_NAME }}" 
+          echo "Task to perform : ${{ inputs.TASK }}"
+          echo "Confirmation to apply : ${{ inputs.APPLY }}"
+      
+      - name: Set Vault Token as env var
+        run: |
+          vault_token=${{ steps.vault-login.outputs.vault_token }}
+          vault_address=https://vault.customappsteam.co.uk
+          export VAULT_TOKEN=${{ steps.vault-login.outputs.vault_token }}
+          export VAULT_ADDR=https://vault.customappsteam.co.uk
+          client_id=$(vault kv get -field=client_id kv-v2/devsecops/monitoring/monitoring-cloudops-sp)
+          client_secret=$(vault kv get -field=client_secret kv-v2/devsecops/monitoring/monitoring-cloudops-sp)
+          subscription_id=$(vault kv get -field=subscription_id kv-v2/devsecops/monitoring/${{ inputs.TERRAFORM_WORKSPACE_NAME }}-constants)
+          tenant_id=$(vault kv get -field=tenant_id kv-v2/devsecops/monitoring/${{ inputs.TERRAFORM_WORKSPACE_NAME }}-constants)
+          team_name=$(vault kv get -field=team_name kv-v2/devsecops/monitoring/${{ inputs.TERRAFORM_WORKSPACE_NAME }}-constants)
+          region=$(vault kv get -field=region kv-v2/devsecops/monitoring/${{ inputs.TERRAFORM_WORKSPACE_NAME }}-constants)
+          location=$(vault kv get -field=location kv-v2/devsecops/monitoring/${{ inputs.TERRAFORM_WORKSPACE_NAME }}-constants)
+          echo "CLIENT_ID=$client_id" >> $GITHUB_ENV
+          echo "CLIENT_SECRET=$client_secret" >> $GITHUB_ENV
+          echo "SUBSCRIPTION_ID=$subscription_id" >> $GITHUB_ENV
+          echo "TENANT_ID=$tenant_id" >> $GITHUB_ENV
+          echo "TEAM_NAME=$team_name" >> $GITHUB_ENV
+          echo "REGION=$region" >> $GITHUB_ENV
+          echo "LOCATION=$location" >> $GITHUB_ENV
+          echo "VAULT_TOKEN=$vault_token" >> $GITHUB_ENV
+          echo "VAULT_ADDR=$vault_address" >> $GITHUB_ENV
+          
+      - name: Get Token 
+        uses: tibdex/github-app-token@v1
+        id: get-token
+        with:
+          private_key: ${{ secrets.GH_PRIVATE_KEY }}
+          app_id: ${{ secrets.GH_APP_ID }}
+
+      - name: Replace git config global url
+        run: |
+          git config --local --remove-section http."https://github.com/"
+          git config --global url."https://x-access-token:${{ steps.get-token.outputs.token }}@github.com/KPMG-UK".insteadOf "https://github.com/KPMG-UK"
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+           role-to-assume: arn:aws:iam::034087144987:role/terraform-role
+           aws-region: eu-west-1
+
+      - name: Azure Login
+        run: |
+            az login --service-principal -u ${{ env.CLIENT_ID }} -p ${{ env.CLIENT_SECRET }} --tenant ${{ env.TENANT_ID }}
+            az account set --subscription ${{ env.SUBSCRIPTION_ID }}
+          
+
+      -  name: Setup Terraform
+         uses: hashicorp/setup-terraform@v2
+         with:
+            terraform_version: 0.15.0
+          
+      - name: Terraform init and workspace switch
+        env: 
+          CLIENT_ID: ${{ env.CLIENT_ID }}
+          CLIENT_SECRET: ${{ env.CLIENT_SECRET }}
+          SUBSCRIPTION_ID: ${{ env.SUBSCRIPTION_ID }}
+          TENANT_ID: ${{ env.TENANT_ID }}
+          TEAM_NAME: ${{ env.TEAM_NAME}}
+        run: |
+          curl --silent -o tmpfile -H 'X-Vault-Token: ${{ env.VAULT_TOKEN }}' -X GET https://vault.customappsteam.co.uk/v1/kv-v2/data/devsecops/monitoring/${{ env.TEAM_NAME }}
+          terraform init -input=false
+          terraform workspace select ${{ env.TEAM_NAME }} || terraform workspace new ${{ env.TEAM_NAME }}
+
+      - name: Terraform Validate
+        run: terraform validate -no-color
+
+      - name: Terraform State List
+       #if: github.ref == 'refs/heads/main' && task == 'deploy'
+        run: |
+              terraform state list
+      
+      - name: Terraform Plan
+        if: ${{ github.event.pull_request.merged == true || inputs.task == 'Perform Terraform Apply' || inputs.task == 'View Terraform Plan'}}
+        run: |
+          terraform plan --var 'service_team=${{ env.TEAM_NAME }}' \
+                                      --var 'sentinel_subscription_id=/subscriptions/${{env.SUBSCRIPTION_ID}}' \
+                                      --var 'sentinel_subscription_id_final=${{env.SUBSCRIPTION_ID}}' \
+                                      --var 'client_id=${{env.CLIENT_ID}}' \
+                                      --var 'client_secret=${{env.CLIENT_SECRET}}' \
+                                      --var 'tenant_id=${{env.TENANT_ID}}' \
+                                      --var 'subscription_id=${{env.SUBSCRIPTION_ID}}' \
+                                      --var 'vault_token=${{env.VAULT_TOKEN}}' \
+                                      --var 'region=${{env.REGION}}' \
+                                      --var 'location=${{env.LOCATION}}'\
+                                      -out=tfplan \
+                                      -input=false \
+                                      -no-color
+      
+      - name: Terraform Apply-Deploy Resources
+        if: ${{ inputs.apply  == 'true'  &&  inputs.task == 'Perform Terraform Apply' }}  
+        run: |
+            terraform apply -no-color -input=false -auto-approve tfplan
+        
+                                      
