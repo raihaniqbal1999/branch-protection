@@ -55,6 +55,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
+      - name: test
+        run: echo "hi world"
+
       
       - name: Runtime Parameters Display
         run: |
