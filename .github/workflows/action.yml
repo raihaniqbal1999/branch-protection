@@ -4,6 +4,8 @@ on:
     branches:
      - main
      - 'DSOMON-**'
+  merge_group:
+    types: [checks_requested]
     inputs:
       Terraform_Workspace_Name:
         description: Select the Environment. Default - (Dso-sandbox)
