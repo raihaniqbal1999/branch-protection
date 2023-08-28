@@ -1,6 +1,7 @@
 name: terraform deploy
 on:
  merge_group:
+ pull_request:
  workflow_dispatch:
     branches:
      - main
