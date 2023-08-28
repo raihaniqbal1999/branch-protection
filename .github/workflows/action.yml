@@ -1,9 +1,11 @@
 name: terraform deploy
 on:
+ merge_group:
  workflow_dispatch:
     branches:
      - main
      - 'DSOMON-**'
+  
     inputs:
       Terraform_Workspace_Name:
         description: Select the Environment. Default - (Dso-sandbox)
