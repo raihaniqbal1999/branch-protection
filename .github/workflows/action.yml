@@ -1,10 +1,10 @@
 name: terraform deploy
 on:
+ merge_group:
  workflow_dispatch:
     branches:
      - main
      - 'DSOMON-**'
-  merge_group:
   
     inputs:
       Terraform_Workspace_Name:
